@@ -13,15 +13,21 @@ opt = parser.parse_args()
 
 # data loader
 cut_size = 44
-transform_train = transforms.Compose([
+transformTrain = transforms.Compose([
     transforms.RandomCrop(cut_size),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
 ])
-transform_test = transforms.Compose([
+transformTest = transforms.Compose([
     transforms.TenCrop(cut_size),
     transforms.Lambda(lambda crops: torch.stack([transforms.ToTensor()(crop) for crop in crops])),
 ])
+
+# data set
+trainSet = CK(split = 'Training', fold = opt.fold, transform=transformTrain)
+trainLoader = torch.utils.data.DataLoader(trainSet, batch_size=opt.bs, shuffle=True)
+testSet = CK(split = 'Testing', fold = opt.fold, transform=transformTest)
+testLoader = torch.utils.data.DataLoader(testSet, batch_size=5, shuffle=False)
 
 if __name__ == '__main__':
     print(opt.model)
