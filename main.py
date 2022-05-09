@@ -1,16 +1,13 @@
-# This is a sample Python script.
+import argparse
 
-# Press Shift+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+# parser
+parser = argparse.ArgumentParser(description='attack to FER on CK+')
+parser.add_argument('--model', type=str, default='VGG19', choices=['VGG19', 'Resnet18'], help='CNN architecture')
+parser.add_argument('--fold', type=int, default=1, help='k fold number')
+parser.add_argument('--bs', type=int, default=128, help='batch size')
+parser.add_argument('--lr', type=float, default=0.01, help='learning rate')
+parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
+opt = parser.parse_args()
 
-
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press Ctrl+F8 to toggle the breakpoint.
-
-
-# Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    print_hi('PyCharm')
-
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+    print(opt.model)
