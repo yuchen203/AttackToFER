@@ -12,6 +12,8 @@ from vgg import VGG
 from resnet import ResNet18
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
+
 # parser
 parser = argparse.ArgumentParser(description='attack to FER on FER2013')
 parser.add_argument('--model', type=str, default='Resnet18', choices=['VGG19', 'Resnet18'], help='CNN architecture')
@@ -36,8 +38,8 @@ transform_test = transforms.Compose([
 
 trainset = FER2013(split='Training', transform=transform_train)
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=opt.bs, shuffle=True, num_workers=0)
-PrivateTestset = FER2013(split='PrivateTest', transform=transform_test)
-PrivateTestloader = torch.utils.data.DataLoader(PrivateTestset, batch_size=opt.bs, shuffle=False, num_workers=0)
+Testset = FER2013(split='PrivateTest', transform=transform_test)
+Testloader = torch.utils.data.DataLoader(Testset, batch_size=opt.bs, shuffle=False, num_workers=0)
 
 # model
 if opt.model == 'VGG19':
@@ -47,8 +49,8 @@ else:
 
 # train
 use_cuda = torch.cuda.is_available()
-best_PrivateTest_acc = 0  # best PrivateTest accuracy
-best_PrivateTest_acc_epoch = 0
+best_Test_acc = 0  # best Test accuracy
+best_Test_acc_epoch = 0
 learning_rate_decay_start = 80  # 50
 learning_rate_decay_every = 5  # 5
 learning_rate_decay_rate = 0.9  # 0.9
@@ -61,13 +63,12 @@ if opt.resume:
     # Load checkpoint.
     print('==> Resuming from checkpoint..')
     # assert os.path.isdir(path), 'Error: no checkpoint directory found!'
-    #checkpoint = torch.load(os.path.join(path, 'PrivateTest_model.t7'))
-    checkpoint = torch.load('./PrivateTest_model.pth')
+    checkpoint = torch.load('./'+opt.model+'.pth')
     net.load_state_dict(checkpoint['net'])
-    best_PrivateTest_acc = checkpoint['best_PrivateTest_acc']
-    best_PrivateTest_acc_epoch = checkpoint['best_PrivateTest_acc_epoch']
-    start_epoch = checkpoint['best_PrivateTest_acc_epoch'] + 1
-    print('best_PrivateTest_acc', best_PrivateTest_acc)
+    best_Test_acc = checkpoint['best_Test_acc']
+    best_Test_acc_epoch = checkpoint['best_Test_acc_epoch']
+    start_epoch = checkpoint['best_Test_acc_epoch'] + 1
+    print('best_Test_acc', best_Test_acc)
 else:
     print('==> Building model..')
 
@@ -116,15 +117,15 @@ def train(epoch):
     Train_acc = 100. * correct / total
 
 
-def PrivateTest(epoch):
-    global PrivateTest_acc
-    global best_PrivateTest_acc
-    global best_PrivateTest_acc_epoch
+def Test(epoch):
+    global Test_acc
+    global best_Test_acc
+    global best_Test_acc_epoch
     net.eval()
-    PrivateTest_loss = 0
+    Test_loss = 0
     correct = 0
     total = 0
-    for batch_idx, (inputs, targets) in enumerate(PrivateTestloader):
+    for batch_idx, (inputs, targets) in enumerate(Testloader):
         bs, ncrops, c, h, w = np.shape(inputs)
         inputs = inputs.view(-1, c, h, w)
         if use_cuda:
@@ -133,42 +134,42 @@ def PrivateTest(epoch):
         outputs = net(inputs)
         outputs_avg = outputs.view(bs, ncrops, -1).mean(1)  # avg over crops
         loss = criterion(outputs_avg, targets)
-        PrivateTest_loss += loss.data.item()
+        Test_loss += loss.data.item()
         _, predicted = torch.max(outputs_avg.data, 1)
         total += targets.size(0)
         correct += predicted.eq(targets.data).cpu().sum()
 
-        utils.progress_bar(batch_idx, len(PrivateTestloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
-            % (PrivateTest_loss / (batch_idx + 1), 100. * correct / total, correct, total))
+        utils.progress_bar(batch_idx, len(Testloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
+            % (Test_loss / (batch_idx + 1), 100. * correct / total, correct, total))
     # Save checkpoint.
-    PrivateTest_acc = 100.*correct/total
+    Test_acc = 100.*correct/total
 
-    if PrivateTest_acc > best_PrivateTest_acc:
+    if Test_acc > best_Test_acc:
         print('Saving..')
-        print("best_PrivateTest_acc: %0.3f" % PrivateTest_acc)
+        print("best_Test_acc: %0.3f" % Test_acc)
         state = {
             'net': net.state_dict() if use_cuda else net,
-            'best_PrivateTest_acc': PrivateTest_acc,
-            'best_PrivateTest_acc_epoch': epoch,
+            'best_Test_acc': Test_acc,
+            'best_Test_acc_epoch': epoch,
         }
         if not os.path.isdir(path):
             os.mkdir(path)
-        torch.save(state, os.path.join(path,'PrivateTest_model.pth'))
-        best_PrivateTest_acc = PrivateTest_acc
-        best_PrivateTest_acc_epoch = epoch
+        torch.save(state, os.path.join(path,opt.model+'.pth'))
+        best_Test_acc = Test_acc
+        best_Test_acc_epoch = epoch
 
 
 def visualize():
-    print(PrivateTestset.PrivateTest_data[0].max())
-    plt.imshow(PrivateTestset.PrivateTest_data[0], cmap='gray')
-    plt.title(PrivateTestset.PrivateTest_labels[0])
+    print(Testset.est_data[0].max())
+    plt.imshow(Testset.Test_data[0], cmap='gray')
+    plt.title(Testset.Test_labels[0])
     plt.waitforbuttonpress()
 
 
 def PGD(eps = 0.001, alpha = 1/255, steps = 10):
     numAdSample = 0
     numPGDSuccess = 0
-    for batch_idx, (inputs, targets) in enumerate(PrivateTestloader):
+    for batch_idx, (inputs, targets) in enumerate(Testloader):
         #get AdSample
         bs, ncrops, c, h, w = np.shape(inputs)
         inputs = inputs.view(-1, c, h, w)
@@ -196,14 +197,10 @@ def PGD(eps = 0.001, alpha = 1/255, steps = 10):
         _adv, predicted_adv = torch.max(outputs_adv_avg.data, 1)
         if not predicted_adv.eq(targets.data).cpu().sum():
             numPGDSuccess += 1
-        utils.progress_bar(batch_idx, len(PrivateTestloader), 'numPGDSuccess: %d| numAdSample: %d'%(numPGDSuccess, numAdSample))
+        utils.progress_bar(batch_idx, len(Testloader), 'numPGDSuccess: %d| numAdSample: %d'%(numPGDSuccess, numAdSample))
     return numPGDSuccess, numAdSample
 
 
+
 if __name__ == '__main__':
-    for i in range(5):
-        f = open('log.txt', 'a')
-        eps = (i+1)*0.002
-        a, b = PGD(eps)
-        f.write('eps: %.3f  numPGDSuccess: %d  numAdSample: %d\n'%(eps, a, b))
-        f.close()
+    pass
