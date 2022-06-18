@@ -56,14 +56,14 @@ learning_rate_decay_every = 5  # 5
 learning_rate_decay_rate = 0.9  # 0.9
 start_epoch = 0  # start from epoch 0 or last checkpoint epoch
 total_epoch = 250
-path = os.path.join('/model/')
+path = './model/'
 
 opt.resume = True
 if opt.resume:
     # Load checkpoint.
     print('==> Resuming from checkpoint..')
     # assert os.path.isdir(path), 'Error: no checkpoint directory found!'
-    checkpoint = torch.load('./'+opt.model+'.pth')
+    checkpoint = torch.load('./model/'+opt.model+'.pth')
     net.load_state_dict(checkpoint['net'])
     best_Test_acc = checkpoint['best_Test_acc']
     best_Test_acc_epoch = checkpoint['best_Test_acc_epoch']
@@ -84,7 +84,6 @@ optimizer = optim.SGD(net.parameters(), lr=opt.lr, momentum=0.9, weight_decay=5e
 
 def train(epoch):
     print('\nEpoch: %d' % epoch)
-    global Train_acc
     net.train()
     train_loss = 0
     correct = 0
@@ -114,15 +113,15 @@ def train(epoch):
         utils.progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
                            % (train_loss / (batch_idx + 1), 100. * correct / total, correct, total))
 
-    Train_acc = 100. * correct / total
+    train_acc = 100. * correct / total
+    return train_acc
 
 
-def Test(epoch):
-    global Test_acc
+def test(epoch):
     global best_Test_acc
     global best_Test_acc_epoch
     net.eval()
-    Test_loss = 0
+    test_loss = 0
     correct = 0
     total = 0
     for batch_idx, (inputs, targets) in enumerate(Testloader):
@@ -134,43 +133,37 @@ def Test(epoch):
         outputs = net(inputs)
         outputs_avg = outputs.view(bs, ncrops, -1).mean(1)  # avg over crops
         loss = criterion(outputs_avg, targets)
-        Test_loss += loss.data.item()
+        test_loss += loss.data.item()
         _, predicted = torch.max(outputs_avg.data, 1)
         total += targets.size(0)
         correct += predicted.eq(targets.data).cpu().sum()
 
         utils.progress_bar(batch_idx, len(Testloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
-            % (Test_loss / (batch_idx + 1), 100. * correct / total, correct, total))
+            % (test_loss / (batch_idx + 1), 100. * correct / total, correct, total))
     # Save checkpoint.
-    Test_acc = 100.*correct/total
+    test_acc = 100.*correct/total
 
-    if Test_acc > best_Test_acc:
+    if test_acc > best_Test_acc:
         print('Saving..')
-        print("best_Test_acc: %0.3f" % Test_acc)
+        print("best_Test_acc: %0.3f" % test_acc)
         state = {
             'net': net.state_dict() if use_cuda else net,
-            'best_Test_acc': Test_acc,
+            'best_Test_acc': test_acc,
             'best_Test_acc_epoch': epoch,
         }
         if not os.path.isdir(path):
             os.mkdir(path)
         torch.save(state, os.path.join(path,opt.model+'.pth'))
-        best_Test_acc = Test_acc
+        best_Test_acc = test_acc
         best_Test_acc_epoch = epoch
+    return test_acc
 
 
-def visualize():
-    print(Testset.est_data[0].max())
-    plt.imshow(Testset.Test_data[0], cmap='gray')
-    plt.title(Testset.Test_labels[0])
-    plt.waitforbuttonpress()
-
-
-def PGD(eps = 0.001, alpha = 1/255, steps = 10):
+def FGSM(eps = 0.001):
     numAdSample = 0
-    numPGDSuccess = 0
+    numFGSMSuccess = 0
     for batch_idx, (inputs, targets) in enumerate(Testloader):
-        #get AdSample
+        # get AdSample
         bs, ncrops, c, h, w = np.shape(inputs)
         inputs = inputs.view(-1, c, h, w)
         if use_cuda:
@@ -181,7 +174,40 @@ def PGD(eps = 0.001, alpha = 1/255, steps = 10):
         if not predicted.eq(targets.data).cpu().sum():
             continue
         numAdSample += 1
-        #attack
+        # attack
+        inputs_adv = inputs.detach()
+        inputs_adv = Variable(inputs_adv).cuda().requires_grad_()
+        with torch.enable_grad():
+            loss_ce = F.cross_entropy(net(inputs_adv).view(bs, ncrops, -1).mean(1), targets)
+        grad = torch.autograd.grad(loss_ce, [inputs_adv])[0]
+        inputs_adv = inputs_adv.detach() + eps * torch.sign(grad.detach())
+        inputs_adv = torch.clamp_(inputs_adv, 0, 1)
+        # test
+        outputs_adv = net(inputs_adv)
+        outputs_adv_avg = outputs_adv.view(bs, ncrops, -1).mean(1)  # avg over crops
+        _adv, predicted_adv = torch.max(outputs_adv_avg.data, 1)
+        if not predicted_adv.eq(targets.data).cpu().sum():
+            numFGSMSuccess += 1
+        utils.progress_bar(batch_idx, len(Testloader), 'numFGSMSuccess: %d| numAdSample: %d'%(numFGSMSuccess, numAdSample))
+    return numFGSMSuccess, numAdSample
+
+
+def PGD(eps = 0.001, alpha = 1/255, steps = 4):
+    numAdSample = 0
+    numPGDSuccess = 0
+    for batch_idx, (inputs, targets) in enumerate(Testloader):
+        # get AdSample
+        bs, ncrops, c, h, w = np.shape(inputs)
+        inputs = inputs.view(-1, c, h, w)
+        if use_cuda:
+            inputs, targets = inputs.cuda(), targets.cuda()
+        outputs = net(inputs)
+        outputs_avg = outputs.view(bs, ncrops, -1).mean(1)  # avg over crops
+        _, predicted = torch.max(outputs_avg.data, 1)
+        if not predicted.eq(targets.data).cpu().sum():
+            continue
+        numAdSample += 1
+        # attack
         inputs_adv = inputs.detach() + alpha * torch.randn(inputs.shape).cuda().detach()
         for i in range(steps):
             inputs_adv = Variable(inputs_adv).cuda().requires_grad_()
@@ -191,7 +217,7 @@ def PGD(eps = 0.001, alpha = 1/255, steps = 10):
             inputs_adv = inputs_adv.detach() + alpha * torch.sign(grad.detach())
             inputs_adv = torch.min(torch.max(inputs - eps, inputs_adv), inputs + eps)
             inputs_adv = torch.clamp_(inputs_adv, 0, 1)
-        #test
+        # test
         outputs_adv = net(inputs_adv)
         outputs_adv_avg = outputs_adv.view(bs, ncrops, -1).mean(1)  # avg over crops
         _adv, predicted_adv = torch.max(outputs_adv_avg.data, 1)
@@ -201,6 +227,97 @@ def PGD(eps = 0.001, alpha = 1/255, steps = 10):
     return numPGDSuccess, numAdSample
 
 
+def drawCurve():
+    writer = SummaryWriter('./log')
+    writer.add_scalar(opt.model + '_train_acc', 17, 0)
+    writer.add_scalar(opt.model + '_test_acc', 17, 0)
+    for epoch in range(1, total_epoch):
+        train_acc = train(epoch)
+        test_acc = test(epoch)
+        writer.add_scalar(opt.model + '_train_acc', train_acc, epoch)
+        writer.add_scalar(opt.model + '_test_acc', test_acc, epoch)
+
+
+def studyPGDSteps():
+    Steps = [1, 2, 3, 4, 5]
+    Accuracy = []
+    for step in Steps:
+        numPGDSuccess, numAdSample = PGD(eps = 0.001, steps = step)
+        Accuracy.append((numAdSample - numPGDSuccess)/len(Testloader))
+    plt.figure(figsize=(5, 5))
+    plt.plot(Steps, Accuracy, "*-")
+    plt.yticks(np.arange(0, 1.1, step=0.1))
+    plt.xticks(np.arange(0, 6, step=1))
+    plt.title("Accuracy vs Steps")
+    plt.xlabel("Steps")
+    plt.ylabel("Accuracy")
+    plt.savefig("./accuracy.jpg")
+    plt.show()
+
+
+def transferPGD(eps = 0.001, alpha = 1/255, steps = 10):
+    # load model
+    net1 = ResNet18()
+    net2 = VGG('VGG19')
+    checkpoint1 = torch.load('./model/Resnet18.pth')
+    net1.load_state_dict(checkpoint1['net'])
+    checkpoint2 = torch.load('./model/VGG19.pth')
+    net2.load_state_dict(checkpoint2['net'])
+    if use_cuda:
+        net1.cuda()
+        net2.cuda()
+    numAdSample = 0
+    numTransPGDSuccess = 0
+    for batch_idx, (inputs, targets) in enumerate(Testloader):
+        # get AdSample
+        bs, ncrops, c, h, w = np.shape(inputs)
+        inputs = inputs.view(-1, c, h, w)
+        if use_cuda:
+            inputs, targets = inputs.cuda(), targets.cuda()
+        outputs = net2(inputs)
+        outputs_avg = outputs.view(bs, ncrops, -1).mean(1)  # avg over crops
+        _, predicted = torch.max(outputs_avg.data, 1)
+        if not predicted.eq(targets.data).cpu().sum():
+            continue
+        numAdSample += 1
+        # attack
+        inputs_adv = inputs.detach() + alpha * torch.randn(inputs.shape).cuda().detach()
+        for i in range(steps):
+            inputs_adv = Variable(inputs_adv).cuda().requires_grad_()
+            with torch.enable_grad():
+                loss_ce = F.cross_entropy(net1(inputs_adv).view(bs, ncrops, -1).mean(1), targets)
+            grad = torch.autograd.grad(loss_ce, [inputs_adv])[0]
+            inputs_adv = inputs_adv.detach() + alpha * torch.sign(grad.detach())
+            inputs_adv = torch.min(torch.max(inputs - eps, inputs_adv), inputs + eps)
+            inputs_adv = torch.clamp_(inputs_adv, 0, 1)
+        # test
+        outputs_adv = net2(inputs_adv)
+        outputs_adv_avg = outputs_adv.view(bs, ncrops, -1).mean(1)  # avg over crops
+        _adv, predicted_adv = torch.max(outputs_adv_avg.data, 1)
+        if not predicted_adv.eq(targets.data).cpu().sum():
+            numTransPGDSuccess += 1
+        utils.progress_bar(batch_idx, len(Testloader),
+                           'numTransPGDSuccess: %d| numAdSample: %d' % (numTransPGDSuccess, numAdSample))
+    return numTransPGDSuccess, numAdSample
+
+
+def studyTransferPGD():
+    eps = [0, 0.01, 0.02, 0.03, 0.04, 0.05]
+    acc = []
+    for ep in eps:
+        print('eps:', ep)
+        numTransPGDSuccess, numAdSample = transferPGD(eps = ep)
+        acc.append((numAdSample - numTransPGDSuccess)/len(Testloader))
+    plt.figure(figsize=(5, 5))
+    plt.plot(eps, acc, "*-")
+    plt.yticks(np.arange(0, 1.1, step=0.1))
+    plt.xticks(np.arange(0, 0.06, step=0.01))
+    plt.title("Accuracy vs Epsilons")
+    plt.xlabel("Epsilons")
+    plt.ylabel("Accuracy")
+    plt.savefig("./accuracy.jpg")
+    plt.show()
+
 
 if __name__ == '__main__':
-    pass
+    studyTransferPGD()
